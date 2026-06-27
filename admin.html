@@ -86,7 +86,7 @@
 </div>
 
 <div id="adminDashboard" class="admin-dashboard">
-    <div class="dashboard-title">📊 墨析分销实时财务大屏 (云端数据同步中)</div>
+    <div class="dashboard-title">📊 墨析分销实时财务大屏 (云端永久账本已同步)</div>
     <div class="revenue-box">
         📈 财务实时统计：累计收到有效对账账单 <span id="totalOrders">0</span> 笔
     </div>
@@ -103,7 +103,7 @@
             </thead>
             <tbody id="logTableBody">
                 <tr>
-                    <td colspan="5" style="text-align:center;color:#888;">暂无账单数据，正在拦截云端缓存...</td>
+                    <td colspan="5" style="text-align:center;color:#888;">正在从云端账本加载历史账单，请稍候...</td>
                 </tr>
             </tbody>
         </table>
@@ -116,8 +116,11 @@
     const BOSS_PWD = "chen1998"; // 创始人绝对特权密码
     const AGENTS = {
         "adminzdl": "曾德龙",
-        "admintest": "测试1"
+        "admintest1": "测试1"
     };
+
+    // 🛠️ 分配的老板专属免费匿名云账本ID（全球唯一，数据永久累加，不会被顶掉）
+    const CLOUD_DB_URL = "https://kvdb.io/2U9tWbEwSihU7t4j8oF9R4/moxi_sales_v1";
 
     let currentUser = ""; // 当前登录用户身份
     let isBoss = false;   // 是否为创始人
@@ -150,10 +153,83 @@
         
         if (isBoss) {
             document.getElementById('adminDashboard').style.display = "block"; // 老板登录，显现财务大屏
+            loadAllHistoryLogs(); // 💥 一进系统，立刻从云端大账本拉取所有历史记录！
         }
         
         // 登录成功后，立刻建立云端数据天线
         initMQTT();
+    }
+
+    // 从云端备份账本读取所有历史数据，刷新绝对不丢
+    async function loadAllHistoryLogs() {
+        try {
+            const response = await fetch(CLOUD_DB_URL);
+            if (response.ok) {
+                const data = await response.json();
+                if (Array.isArray(data)) {
+                    cleanSalesLogs = data;
+                    renderTable();
+                }
+            } else {
+                document.getElementById('logTableBody').innerHTML = `<tr><td colspan="5" style="text-align:center;color:#888;">暂无历史账单（新开张）</td></tr>`;
+            }
+        } catch (e) {
+            document.getElementById('logTableBody').innerHTML = `<tr><td colspan="5" style="text-align:center;color:#ff4d4d;">云端账本读取失败，请检查网络！</td></tr>`;
+        }
+    }
+
+    // 重新渲染表格视图
+    function renderTable() {
+        const tbody = document.getElementById('logTableBody');
+        if (cleanSalesLogs.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#888;">暂无账单数据</td></tr>`;
+            document.getElementById('totalOrders').innerText = "0";
+            return;
+        }
+        
+        // 倒序排列，让最新的账单排在最上面
+        let sortedLogs = [...cleanSalesLogs].reverse();
+        
+        tbody.innerHTML = "";
+        sortedLogs.forEach(logData => {
+            const row = `<tr>
+                <td style="color:#00f5d4; font-weight:bold;">${logData.agent}</td>
+                <td>${logData.type}</td>
+                <td style="font-family:monospace;">${logData.hwid}</td>
+                <td style="color:#ffb703;font-family:monospace;">${logData.code}</td>
+                <td style="color:#888;">${logData.time}</td>
+            </tr>`;
+            tbody.innerHTML += row;
+        });
+        document.getElementById('totalOrders').innerText = cleanSalesLogs.length;
+    }
+
+    // 将单笔账单追加保存到云端大账本中
+    async function saveLogToCloudDB(newLog) {
+        try {
+            // 1. 先读取最新的账本列表
+            let currentLogs = [];
+            const response = await fetch(CLOUD_DB_URL);
+            if (response.ok) {
+                currentLogs = await response.json();
+                if (!Array.isArray(currentLogs)) currentLogs = [];
+            }
+            
+            // 2. 避免网络重复投递导致的单号重复
+            if (currentLogs.some(item => item.code === newLog.code)) return;
+            
+            // 3. 把新账单追加在末尾
+            currentLogs.push(newLog);
+            
+            // 4. 强行写回云端永久记账本
+            await fetch(CLOUD_DB_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(currentLogs)
+            });
+        } catch (e) {
+            console.error("云端账本追加同步失败: ", e);
+        }
     }
 
     // --- 2. 建立 MQTT 强制在线锁 (基于 8084 WSS 加密通道) ---
@@ -164,17 +240,12 @@
         const options = {
             useSSL: true,
             userName: "moxi",
-            password: "chen1998", // ⚠️ 请务必替换为你之前在客户端认证创建的真实密码！
+            password: "chen1998", // ⚠️ 替换为你之前在客户端认证创建的真实密码！
             onSuccess: () => {
                 mqttConnected = true;
                 const statusBar = document.getElementById('mqttStatus');
                 statusBar.innerText = "🟢 云端安全分销链已锁定 (已联网)";
                 statusBar.className = "status-bar status-connected";
-                
-                // 如果是老板登录，联网成功后自动订阅账单主题来拉取历史缓存
-                if (isBoss) {
-                    mqttClient.subscribe("moxi/sales_log");
-                }
             },
             onFailure: (err) => {
                 mqttConnected = false;
@@ -192,36 +263,18 @@
             statusBar.className = "status-bar status-disconnected";
         };
 
-        // 监听云端账单消息并高精度过滤垃圾日志
+        // 接收实时推送的账单并动态追加更新
         mqttClient.onMessageArrived = (message) => {
             if (message.destinationName !== "moxi/sales_log" || !message.payloadString.trim()) return;
-            
             try {
                 const logData = JSON.parse(message.payloadString);
-                // 双重格式过滤，防止混入杂质
                 if (!logData.agent || !logData.code) return;
                 
-                // 去重机制：防止因网络重复投递显示相同单号
                 if (cleanSalesLogs.some(item => item.code === logData.code)) return;
                 
                 cleanSalesLogs.push(logData);
-                
-                const tbody = document.getElementById('logTableBody');
-                if (cleanSalesLogs.length === 1) tbody.innerHTML = ""; // 清空“暂无数据”
-                
-                const row = `<tr>
-                    <td style="color:#00f5d4; font-weight:bold;">${logData.agent}</td>
-                    <td>${logData.type}</td>
-                    <td style="font-family:monospace;">${logData.hwid}</td>
-                    <td style="color:#ffb703;font-family:monospace;">${logData.code}</td>
-                    <td style="color:#888;">${logData.time}</td>
-                </tr>`;
-                tbody.innerHTML += row;
-                
-                document.getElementById('totalOrders').innerText = cleanSalesLogs.length;
-            } catch (e) {
-                // 默默吞掉非JSON的系统杂质消息
-            }
+                renderTable(); // 实时刷入屏幕
+            } catch (e) {}
         };
 
         mqttClient.connect(options);
@@ -236,7 +289,7 @@
 
         // 🚨 铁律拦截：如果不是老板，且网络没连上，直接锁死不给算码！
         if (!isBoss && !mqttConnected) {
-            alert("🚨 警告：检测到网络通信中断！\n为防范飞单私吞，系统已强制锁定，禁止离线生成激活码！请联网后再试。");
+            alert("🚨 警告：检测到网络通信中断！\n系统已强制锁定，禁止离线生成激活码！请联网后再试。");
             return;
         }
 
@@ -275,7 +328,7 @@
         
         const finalCode = `${expireTimeStr}-${signature}`;
 
-        // --- 核心商业追踪：如果是代理商出单，强制同步发射账单至云端 ---
+        // --- 核心商业追踪：如果是代理商出单，强行双重上报给MQTT+云端大账本 ---
         if (!isBoss && mqttConnected) {
             const billData = {
                 agent: currentUser,
@@ -285,13 +338,16 @@
                 time: new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
             };
             
+            // 1. 发送给实时通讯数据线
             const message = new Paho.MQTT.Message(JSON.stringify(billData));
             message.destinationName = "moxi/sales_log";
-            message.retained = true; // 开启保留消息，确保老板离线也能收到
+            message.retained = true;
             mqttClient.send(message);
+            
+            // 2. 直接追加写入云端大账本（保命防覆盖）
+            saveLogToCloudDB(billData);
         }
 
-        // 最终放行，渲染激活码
         document.getElementById('activationCode').innerText = finalCode;
         document.getElementById('resultBox').style.display = 'block';
         
