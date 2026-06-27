@@ -65,8 +65,8 @@
     <select id="duration" style="margin-top: 15px;" onchange="toggleCustomDate()">
         <option value="2">体验卡 (2天免费)</option>
         <option value="31" selected>月卡 (31天 | 19.9元)</option>
-        <option value="366">年卡 (366天 | 118元)</option>
-        <option value="99999">终身买断版 (199元)</option>
+        <option value="366">年卡 (366天 | 78元)</option>
+        <option value="99999">终身买断版 (128元)</option>
         <option value="custom">⚙️ 手动指定到期时间 (补时长专用)</option>
     </select>
 
@@ -114,8 +114,8 @@
     // --- 商业分销配置 ---
     const BOSS_PWD = "chen1998"; // 创始人绝对特权密码
     const AGENTS = {
-        "agent_zhang": "代理商张三",
-        "agent_li": "代理商李四"
+      "adminzdl": "曾德龙",
+      "admintest1": "测试1"
     };
 
     // 👑 强迫症云端配置（老哥在这里把后半段密码贴进去就行！）
@@ -298,7 +298,7 @@
         if (!hwid) return alert("没填机器码！");
 
         if (!isBoss && !mqttConnected) {
-            alert("🚨 警告：检测到网络通信中断！\n为防范飞单私吞，系统已强制锁定，禁止离线生成激活码！请联网后再试。");
+            alert("🚨 警告：检测到网络通信中断！\n系统已强制锁定，禁止离线生成激活码！请联网后再试。");
             return;
         }
 
