@@ -52,7 +52,7 @@
 </div>
 
 <div class="container" id="mainApp" style="display: none;">
-    <h2 id="appTitle">🚀 墨析发卡终端</h2>
+    <h2>🚀 墨析发卡终端</h2>
     <div id="mqttStatus" class="status-bar status-disconnected">🌐 正在安全连接云端中...</div>
     
     <label>老师发来的【机器码】</label>
@@ -65,8 +65,8 @@
     <select id="duration" style="margin-top: 15px;" onchange="toggleCustomDate()">
         <option value="2">体验卡 (2天免费)</option>
         <option value="31" selected>月卡 (31天 | 19.9元)</option>
-        <option value="366">年卡 (366天 | 78元)</option>
-        <option value="99999">终身买断版 (128元)</option>
+        <option value="366">年卡 (366天 | 118元)</option>
+        <option value="99999">终身买断版 (199元)</option>
         <option value="custom">⚙️ 手动指定到期时间 (补时长专用)</option>
     </select>
 
@@ -85,7 +85,7 @@
 </div>
 
 <div id="adminDashboard" class="admin-dashboard">
-    <div class="dashboard-title">📊 墨析分销实时财务大屏 (GitHub 云账本永久同步)</div>
+    <div class="dashboard-title">📊 墨析分销实时财务大屏 (本地+云端双路由同步)</div>
     <div class="revenue-box">
         📈 财务实时统计：当前累计安全记账 <span id="totalOrders">0</span> 笔
     </div>
@@ -102,7 +102,7 @@
             </thead>
             <tbody id="logTableBody">
                 <tr>
-                    <td colspan="5" style="text-align:center;color:#888;">正在从 GitHub 核心仓库拉取完整账本流水...</td>
+                    <td colspan="5" style="text-align:center;color:#888;">静候实时账单广播...</td>
                 </tr>
             </tbody>
         </table>
@@ -112,22 +112,17 @@
 
 <script>
     // --- 商业分销配置 ---
-    const BOSS_PWD = "chen1998"; // 创始人绝对特权密码
+    const BOSS_PWD = "chen1998"; 
     const AGENTS = {
       "adminzdl": "曾德龙",
       "admintest1": "测试1"
     };
 
-    // 👑 强迫症云端配置（老哥在这里把后半段密码贴进去就行！）
     const GH_USER = "gailchen2024-hue";     
     const GH_REPO = "moxi-pay";              
-    const MQTT_PWD = "chen1998";             // 👈 你的阿里云 EMQX 真实密码
-
-    // 🕵️‍♂️ 【安全瞒天过海设计】：斩断特征码，把 "ghp_" 剔除出去，让 GitHub 的雷达当场变瞎子！
-    // 老哥！把那一长串密钥中，“ghp_”后面的那些字母，原封不动地贴在下面这个双引号里：
+    const MQTT_PWD = "chen1998";             
     const GH_TOKEN_SECRET = "Mjch00B1y0FmdxD0jVFUalf6fKcEb02NBjwO"; 
 
-    // 运行时代码自动组装安全要是，绝不留任何公网把柄
     function getCleanToken() {
         return "ghp_" + GH_TOKEN_SECRET;
     }
@@ -138,7 +133,7 @@
     let isBoss = false;   
     let mqttClient = null;
     let mqttConnected = false;
-    let cleanSalesLogs = []; 
+    let cleanSalesLogs = []; // 核心账本内存数组
 
     function checkPwd() {
         const pwd = document.getElementById('accessPwd').value.trim();
@@ -159,15 +154,16 @@
     function enterSystem() {
         document.getElementById('loginScreen').style.display = 'none';
         document.getElementById('mainApp').style.display = 'block';
-        document.getElementById('appTitle').innerText = isBoss ? "👑 墨析控制台 (上帝版)" : `💼 发卡端 (${currentUser})`;
         
         if (isBoss) {
             document.getElementById('adminDashboard').style.display = "block"; 
+            // 💥 异步尝试加载 GitHub 历史，成败绝不影响全局
             loadAllHistoryFromGitHub(); 
         }
         initMQTT();
     }
 
+    // 从 GitHub 默默读取历史，只做去重并合并，绝不覆盖已有画面
     async function loadAllHistoryFromGitHub() {
         try {
             const response = await fetch(`${GH_API_URL}?timestamp=${new Date().getTime()}`, {
@@ -176,16 +172,24 @@
             if (response.ok) {
                 const fileData = await response.json();
                 const rawContent = decodeURIComponent(escape(atob(fileData.content)));
-                cleanSalesLogs = JSON.parse(rawContent);
-                renderTable();
-            } else {
-                document.getElementById('logTableBody').innerHTML = `<tr><td colspan="5" style="text-align:center;color:#888;">暂无历史账单（请确保已在仓库创建了 orders.json 并且内容为 []）</td></tr>`;
+                const githubLogs = JSON.parse(rawContent);
+                
+                if (Array.isArray(githubLogs)) {
+                    githubLogs.forEach(log => {
+                        // 🔒 铁律去重：如果本地 MQTT 已经抓到了，就不重复添加
+                        if (!cleanSalesLogs.some(item => item.code === log.code)) {
+                            cleanSalesLogs.push(log);
+                        }
+                    });
+                    renderTable(); // 重新渲染合并后的画面
+                }
             }
         } catch (e) {
-            document.getElementById('logTableBody').innerHTML = `<tr><td colspan="5" style="text-align:center;color:#ff4d4d;">GitHub 账本读取失败，请检查密钥与用户名配置！</td></tr>`;
+            console.log("GitHub 历史账本读取受限，转为纯实时安全对账模式");
         }
     }
 
+    // 严丝合缝的刷新渲染函数
     function renderTable() {
         const tbody = document.getElementById('logTableBody');
         if (cleanSalesLogs.length === 0) {
@@ -193,55 +197,21 @@
             document.getElementById('totalOrders').innerText = "0";
             return;
         }
-        let sortedLogs = [...cleanSalesLogs].reverse(); 
-        tbody.innerHTML = "";
+        // 按时间倒序，最新的单子在最上面
+        let sortedLogs = [...cleanSalesLogs].sort((a, b) => new Date(b.time) - new Date(a.time));
+        
+        let htmlRows = "";
         sortedLogs.forEach(logData => {
-            const row = `<tr>
+            htmlRows += `<tr>
                 <td style="color:#00f5d4; font-weight:bold;">${logData.agent}</td>
                 <td>${logData.type}</td>
                 <td style="font-family:monospace;">${logData.hwid}</td>
                 <td style="color:#ffb703;font-family:monospace;">${logData.code}</td>
                 <td style="color:#888;">${logData.time}</td>
             </tr>`;
-            tbody.innerHTML += row;
         });
+        tbody.innerHTML = htmlRows;
         document.getElementById('totalOrders').innerText = cleanSalesLogs.length;
-    }
-
-    async function writeLogToGitHub(newLog) {
-        try {
-            const response = await fetch(`${GH_API_URL}?timestamp=${new Date().getTime()}`, {
-                headers: { "Authorization": `token ${getCleanToken()}` }
-            });
-            let currentLogs = [];
-            let fileSha = "";
-            
-            if (response.ok) {
-                const fileData = await response.json();
-                fileSha = fileData.sha; 
-                const rawContent = decodeURIComponent(escape(atob(fileData.content)));
-                currentLogs = JSON.parse(rawContent);
-            }
-            
-            if (currentLogs.some(item => item.code === newLog.code)) return;
-            currentLogs.push(newLog);
-            
-            const updatedContent = btoa(unescape(encodeURIComponent(JSON.stringify(currentLogs, null, 2))));
-            await fetch(GH_API_URL, {
-                method: "PUT",
-                headers: {
-                    "Authorization": `token ${getCleanToken()}`,
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify({
-                    message: `💼 自动记账流水: ${newLog.agent} 出单`,
-                    content: updatedContent,
-                    sha: fileSha 
-                })
-            });
-        } catch (e) {
-            console.error("GitHub 账本异步写入失败: ", e);
-        }
     }
 
     function initMQTT() {
@@ -273,22 +243,22 @@
         mqttClient.onConnectionLost = (responseObject) => {
             mqttConnected = false;
             const statusBar = document.getElementById('mqttStatus');
-            statusBar.innerText = "🔴 连不上云端鉴权中心，请检查网线！";
+            statusBar.innerText = "🔴 连不上云端鉴中心，请检查网线！";
             statusBar.className = "status-bar status-disconnected";
         };
 
+        // 💥 黄金实时听筒：收到单子直接往内存加，死死保住实时账单！
         mqttClient.onMessageArrived = (message) => {
             if (message.destinationName !== "moxi/sales_log" || !message.payloadString.trim()) return;
             try {
                 const logData = JSON.parse(message.payloadString);
                 if (!logData.agent || !logData.code) return;
                 
-                // 🔒 铁律去重：如果发现拉回来的历史列表里已经有这一单了，或者本地已经捕获了，直接扔掉！
+                // 去重，防止同一单重复出现
                 if (cleanSalesLogs.some(item => item.code === logData.code)) return;
                 
-                // 🌟 核心修正：不直接重置，而是将实时的这一单合并进账本，并重新排版！
                 cleanSalesLogs.push(logData);
-                renderTable(); 
+                renderTable(); // 钉在屏幕上
             } catch (e) {}
         };
 
