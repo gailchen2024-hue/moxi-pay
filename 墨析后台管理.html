@@ -136,8 +136,7 @@
                 statusBar.innerText = "🔴 连不上云端鉴权中心，请检查网线！";
                 statusBar.className = "status-bar status-disconnected";
             },
-            keepAliveInterval: 30,
-            reconnect: true
+            keepAliveInterval: 30
         };
 
         mqttClient.onConnectionLost = (responseObject) => {
