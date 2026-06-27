@@ -282,8 +282,11 @@
             try {
                 const logData = JSON.parse(message.payloadString);
                 if (!logData.agent || !logData.code) return;
+                
+                // 🔒 铁律去重：如果发现拉回来的历史列表里已经有这一单了，或者本地已经捕获了，直接扔掉！
                 if (cleanSalesLogs.some(item => item.code === logData.code)) return;
                 
+                // 🌟 核心修正：不直接重置，而是将实时的这一单合并进账本，并重新排版！
                 cleanSalesLogs.push(logData);
                 renderTable(); 
             } catch (e) {}
