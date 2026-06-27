@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>墨析 AI - 发卡查账一体终端 (安全商业版)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js" type="text/javascript"></script>
+    <style>
+        body { font-family: -apple-system, sans-serif; background-color: #f4f4f5; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .container { background-color: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); width: 100%; max-width: 400px; box-sizing: border-box; }
+        h2 { text-align: center; color: #18181b; margin-top: 0; }
+        label { display: block; margin-top: 15px; margin-bottom: 5px; color: #52525b; font-size: 14px; font-weight: bold; }
+        
+        .input-group { display: flex; gap: 10px; align-items: center; }
+        .input-group input { flex: 1; margin: 0; }
+        
+        input, select { width: 100%; padding: 12px; border: 1px solid #d4d4d8; border-radius: 6px; box-sizing: border-box; font-size: 16px; font-family: monospace; }
+        button { width: 100%; padding: 14px; background-color: #2563eb; color: white; border: none; border-radius: 6px; font-size: 16px; font-weight: bold; cursor: pointer; transition: 0.2s; }
+        button:hover { background-color: #1d4ed8; }
+        
+        .btn-small { width: auto; padding: 12px 16px; background-color: #e4e4e7; color: #3f3f46; font-size: 14px; white-space: nowrap; }
+        .btn-small:hover { background-color: #d4d4d8; }
+        .btn-copy { background-color: #10b981; margin-top: 10px; }
+        .btn-copy:hover { background-color: #059669; }
+
+        .result-box { margin-top: 20px; padding: 15px; background-color: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; text-align: center; display: none; }
+        .result-code { font-size: 20px; font-weight: bold; color: #166534; margin: 10px 0; user-select: all; }
+        
+        /* 状态条样式 */
+        .status-bar { font-size: 12px; text-align: center; margin-top: 10px; padding: 6px; border-radius: 4px; font-weight: bold; }
+        .status-connected { background-color: #dcfce7; color: #15803d; }
+        .status-disconnected { background-color: #fee2e2; color: #b91c1c; }
+    </style>
+</head>
+<body>
+
+<div class="container" id="loginScreen">
+    <h2>🔒 身份凭证验证</h2>
+    <label>请输入访问特征码</label>
+    <input type="password" id="accessPwd" placeholder="输入密码/代理特征码后按回车" onkeydown="if(event.key==='Enter') checkPwd()">
+    <button style="margin-top: 25px;" onclick="checkPwd()">登入系统</button>
+</div>
+
+<div class="container" id="mainApp" style="display: none;">
+    <h2 id="appTitle">🚀 墨析发卡终端</h2>
+    <div id="mqttStatus" class="status-bar status-disconnected">🌐 正在安全连接云端中...</div>
+    
+    <label>老师发来的【机器码】</label>
+    <div class="input-group">
+        <input type="text" id="hwid" placeholder="如: MXAI-8F2D-91AC-4B2E" autocomplete="off">
+        <button class="btn-small" onclick="pasteHWID()">📋 粘贴</button>
+    </div>
+    
+    <label>授权套餐操作</label>
+    <select id="duration" style="margin-top: 15px;" onchange="toggleCustomDate()">
+        <option value="2">体验卡 (2天免费)</option>
+        <option value="31" selected>月卡 (31天 | 19.9元)</option>
+        <option value="366">年卡 (366天 | 118元)</option>
+        <option value="99999">终身买断版 (199元)</option>
+        <option value="custom">⚙️ 手动指定到期时间 (补时长专用)</option>
+    </select>
+
+    <div id="customDateWrap" style="display: none; margin-top: 10px;">
+        <label style="color: #b91c1c;">精确设置到期时间：</label>
+        <input type="datetime-local" id="customDate">
+    </div>
+    
+    <button style="margin-top: 25px;" id="genBtn" onclick="generateCode()">生成专属激活码</button>
+    
+    <div class="result-box" id="resultBox">
+        <div style="font-size: 14px; color: #15803d;">激活码生成成功👇</div>
+        <div class="result-code" id="activationCode"></div>
+        <button class="btn-copy" id="copyBtn" onclick="copyCode()">一键复制发给老师</button>
+    </div>
+</div>
+
+<script>
+    // --- 商业分销配置 ---
+    const BOSS_PWD = "chen1998"; // 创始人绝对特权密码
+    const AGENTS = {
+        "agent_zhang": "代理商张三",
+        "agent_li": "代理商李四"
+    };
+
+    let currentUser = ""; // 当前登录用户身份
+    let isBoss = false;   // 是否为创始人
+    let mqttClient = null;
+    let mqttConnected = false;
+
+    // --- 1. 密码与身份识别 ---
+    function checkPwd() {
+        const pwd = document.getElementById('accessPwd').value.trim();
+        
+        if (pwd === BOSS_PWD) {
+            currentUser = "创始人";
+            isBoss = true;
+            enterSystem();
+        } else if (AGENTS[pwd]) {
+            currentUser = AGENTS[pwd];
+            isBoss = false;
+            enterSystem();
+        } else {
+            alert("❌ 特征码错误，非法访问！");
+            document.getElementById('accessPwd').value = '';
+        }
+    }
+
+    function enterSystem() {
+        document.getElementById('loginScreen').style.display = 'none';
+        document.getElementById('mainApp').style.display = 'block';
+        document.getElementById('appTitle').innerText = isBoss ? "👑 墨析控制台 (上帝版)" : `💼 发卡端 (${currentUser})`;
+        
+        // 登录成功后，立刻建立云端数据天线
+        initMQTT();
+    }
+
+    // --- 2. 建立 MQTT 强制在线锁 (基于 8084 WSS 加密通道) ---
+    function initMQTT() {
+        // 使用随机 ClientID 防止相互顶号
+        const clientId = "keygen_" + Math.random().toString(16).substr(2, 8);
+        mqttClient = new Paho.MQTT.Client("u11aa3e0.ala.cn-hangzhou.emqxsl.cn", 8084, "/mqtt", clientId);
+
+        const options = {
+            useSSL: true,
+            userName: "moxi",
+            password: "chen1998", // ⚠️ 请务必替换为你之前在客户端认证创建的真实密码！
+            onSuccess: () => {
+                mqttConnected = true;
+                const statusBar = document.getElementById('mqttStatus');
+                statusBar.innerText = "🟢 云端安全分销链已锁定 (已联网)";
+                statusBar.className = "status-bar status-connected";
+            },
+            onFailure: (err) => {
+                mqttConnected = false;
+                const statusBar = document.getElementById('mqttStatus');
+                statusBar.innerText = "🔴 连不上云端鉴权中心，请检查网线！";
+                statusBar.className = "status-bar status-disconnected";
+            },
+            keepAliveInterval: 30,
+            reconnect: true
+        };
+
+        mqttClient.onConnectionLost = (responseObject) => {
+            mqttConnected = false;
+            const statusBar = document.getElementById('mqttStatus');
+            statusBar.innerText = "🔴 连不上云端鉴权中心，请检查网线！";
+            statusBar.className = "status-bar status-disconnected";
+        };
+
+        mqttClient.connect(options);
+    }
+
+    // --- 3. 强制在线拦截与自动上报核心 ---
+    function generateCode() {
+        const hwid = document.getElementById('hwid').value.trim().toUpperCase();
+        const durationVal = document.getElementById('duration').value;
+        
+        if (!hwid) return alert("没填机器码！");
+
+        // 🚨 铁律拦截：如果不是老板，且网络没连上，直接锁死不给算码！
+        if (!isBoss && !mqttConnected) {
+            alert("🚨 警告：检测到网络通信中断！\n为防范飞单私吞，系统已强制锁定，禁止离线生成激活码！请联网后再试。");
+            return;
+        }
+
+        // --- 开始计算激活码 (保持你原封不动的核心哈希算法) ---
+        let date = new Date();
+        let cardType = "";
+
+        if (durationVal === 'custom') {
+            const customVal = document.getElementById('customDate').value;
+            if (!customVal) return alert("请先选择自定义的到期时间！");
+            date = new Date(customVal);
+            cardType = "自定义时长";
+        } else {
+            const days = parseInt(durationVal);
+            if (days === 2) cardType = "体验卡";
+            else if (days === 31) cardType = "月卡";
+            else if (days === 366) cardType = "年卡";
+            else if (days === 99999) cardType = "终身买断版";
+
+            if (days === 99999) {
+                date.setFullYear(2099, 11, 31);
+                date.setHours(23, 59, 0);
+            } else {
+                date.setTime(date.getTime() + days * 24 * 60 * 60 * 1000);
+            }
+        }
+        
+        const yyyy = date.getFullYear();
+        const mm = String(date.getMonth() + 1).padStart(2, '0');
+        const dd = String(date.getDate()).padStart(2, '0');
+        const hh = String(date.getHours()).padStart(2, '0');
+        const min = String(date.getMinutes()).padStart(2, '0');
+        
+        const expireTimeStr = `${yyyy}${mm}${dd}${hh}${min}`;
+        const rawString = hwid + expireTimeStr + SECRET_SALT;
+        const signature = generateSignature(rawString);
+        
+        const finalCode = `${expireTimeStr}-${signature}`;
+
+        // --- 核心商业追踪：如果是代理商出单，强制同步发射账单至云端 ---
+        if (!isBoss && mqttConnected) {
+            const billData = {
+                agent: currentUser,
+                type: cardType,
+                hwid: hwid,
+                code: finalCode,
+                time: new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
+            };
+            
+            const message = new Paho.MQTT.Message(JSON.stringify(billData));
+            message.destinationName = "moxi/sales_log";
+            message.retained = true; // 开启保留消息，确保老板离线也能收到
+            mqttClient.send(message);
+        }
+
+        // 最终放行，渲染激活码
+        document.getElementById('activationCode').innerText = finalCode;
+        document.getElementById('resultBox').style.display = 'block';
+        
+        const copyBtn = document.getElementById('copyBtn');
+        copyBtn.innerText = "一键复制发给老师";
+        copyBtn.style.backgroundColor = "#10b981";
+    }
+
+    // --- FNV-1a 盐值算码哈希算法 ---
+    const SECRET_SALT = "MoXi_Physics_AI_2026_@TopSecret!";
+
+    function generateSignature(str) {
+        let hash = 2166136261;
+        for (let i = 0; i < str.length; i++) {
+            hash ^= str.charCodeAt(i);
+            hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
+        }
+        return (hash >>> 0).toString(16).padStart(8, '0').toUpperCase();
+    }
+
+    // --- 辅助功能：一键粘贴与复制 ---
+    async function pasteHWID() {
+        try {
+            const text = await navigator.clipboard.readText();
+            document.getElementById('hwid').value = text.trim();
+        } catch (err) {
+            alert("⚠️ 浏览器安全限制，请直接使用 Ctrl+V 粘贴！");
+            document.getElementById('hwid').focus();
+        }
+    }
+
+    function copyCode() {
+        const code = document.getElementById('activationCode').innerText;
+        if (!code) return;
+        const textArea = document.createElement("textarea");
+        textArea.value = code;
+        document.body.appendChild(textArea);
+        textArea.select();
+        try {
+            document.execCommand('copy');
+            const copyBtn = document.getElementById('copyBtn');
+            copyBtn.innerText = "✅ 复制成功！去微信发货";
+            copyBtn.style.backgroundColor = "#059669";
+            setTimeout(() => {
+                copyBtn.innerText = "一键复制发给老师";
+                copyBtn.style.backgroundColor = "#10b981";
+            }, 2000);
+        } catch (err) {
+            alert("❌ 复制失败，请手动长按数字复制！");
+        }
+        document.body.removeChild(textArea);
+    }
+
+    function toggleCustomDate() {
+        const type = document.getElementById('duration').value;
+        document.getElementById('customDateWrap').style.display = type === 'custom' ? 'block' : 'none';
+    }
+</script>
+</body>
+</html>
