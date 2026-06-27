@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>墨析 AI - 发卡查账一体终端 (安全商业版)</title>
+    <title>墨析 AI - 发卡查账一体终端 (云端数据版)</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js" type="text/javascript"></script>
     <style>
         body { font-family: -apple-system, sans-serif; background-color: #f4f4f5; display: flex; flex-direction: column; justify-content: center; align-items: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; }
@@ -37,7 +37,7 @@
         .revenue-box span { color: #00f5d4; font-weight: bold; }
         .log-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 10pt; }
         .log-table th { background: #2a2a35; color: #ffb703; padding: 10px; text-align: left; border-bottom: 2px solid #ffb703; }
-        .log-table td { padding: 10px; color: #e0e0e0; border-bottom: 1px solid #3a3a45; }
+        .log-table td { padding: 10px; color: #e0e0e0; border-bottom: 1px solid #3a3a45 1px solid; }
         .export-btn { background: #00f5d4; color: #000; border: none; padding: 8px 15px; border-radius: 4px; cursor: pointer; font-weight: bold; margin-top: 15px; font-size: 10pt; transition: 0.2s; }
         .export-btn:hover { background: #00bbf9; color: #fff; }
     </style>
@@ -85,9 +85,9 @@
 </div>
 
 <div id="adminDashboard" class="admin-dashboard">
-    <div class="dashboard-title">📊 墨析分销实时财务大屏 (本地+云端双路由同步)</div>
+    <div class="dashboard-title">📊 墨析分销实时财务大屏 (GitHub 云账本永久同步)</div>
     <div class="revenue-box">
-        📈 财务实时统计：当前累计安全记账 <span id="totalOrders">0</span> 笔
+        📈 财务实时统计：当前云账本安全存证 <span id="totalOrders">0</span> 笔
     </div>
     <div style="overflow-x: auto;">
         <table class="log-table">
@@ -102,7 +102,7 @@
             </thead>
             <tbody id="logTableBody">
                 <tr>
-                    <td colspan="5" style="text-align:center;color:#888;">静候实时账单广播...</td>
+                    <td colspan="5" style="text-align:center;color:#888;">正在同步 GitHub 云端账本流水...</td>
                 </tr>
             </tbody>
         </table>
@@ -163,6 +163,7 @@
         initMQTT();
     }
 
+    // 老板端一秒同步 GitHub 里的所有历史存证
     async function loadAllHistoryFromGitHub() {
         try {
             const response = await fetch(`${GH_API_URL}?timestamp=${new Date().getTime()}`, {
@@ -171,30 +172,31 @@
             if (response.ok) {
                 const fileData = await response.json();
                 const rawContent = decodeURIComponent(escape(atob(fileData.content)));
-                const githubLogs = JSON.parse(rawContent);
-                
-                if (Array.isArray(githubLogs)) {
-                    githubLogs.forEach(log => {
+                const remoteLogs = JSON.parse(rawContent);
+                if (Array.isArray(remoteLogs)) {
+                    // 合并去重
+                    remoteLogs.forEach(log => {
                         if (!cleanSalesLogs.some(item => item.code === log.code)) {
                             cleanSalesLogs.push(log);
                         }
                     });
-                    renderTable(); 
                 }
             }
+            renderTable();
         } catch (e) {
-            console.log("GitHub 历史账本读取受限");
+            console.error("加载云账本失败:", e);
         }
     }
 
     function renderTable() {
         const tbody = document.getElementById('logTableBody');
         if (cleanSalesLogs.length === 0) {
-            tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#888;">天网已通电，静候全网出单广播...</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#888;">天网已就绪，静候出单...</td></tr>`;
             document.getElementById('totalOrders').innerText = "0";
             return;
         }
-        let sortedLogs = [...cleanSalesLogs].sort((a, b) => new Date(b.time) - new Date(a.time));
+        // 按时间倒序排列，最新出的单子在最上面
+        let sortedLogs = [...cleanSalesLogs].sort((a,b) => new Date(b.time) - new Date(a.time));
         
         let htmlRows = "";
         sortedLogs.forEach(logData => {
@@ -243,20 +245,22 @@
             statusBar.className = "status-bar status-disconnected";
         };
 
-        mqttClient.onMessageArrived = (message) => {
+        // 💥 【核心闭环】：当老板大屏在线接收到广播时，由老板的超级身份去追加并保存进 GitHub 仓库！
+        mqttClient.onMessageArrived = async (message) => {
             if (message.destinationName !== "moxi/sales_log" || !message.payloadString.trim()) return;
             try {
                 const logData = JSON.parse(message.payloadString);
                 if (!logData.agent || !logData.code) return;
                 
+                // 去重，防止网络多投
                 if (cleanSalesLogs.some(item => item.code === logData.code)) return;
                 
                 cleanSalesLogs.push(logData);
-                renderTable(); 
+                renderTable(); // 立刻渲染出来，不闪现不消失
                 
-                // 👑 【核心商业修正】：只有当老板大屏在线捕获时，才用老板的身份写进 GitHub！
+                // 👑 只有是创始人登录状态，才触发真正写回 GitHub 的最高权限函数！
                 if (isBoss) {
-                    writeLogToGitHub(logData);
+                    await writeLogToGitHub(logData);
                 }
             } catch (e) {}
         };
@@ -264,7 +268,7 @@
         mqttClient.connect(options);
     }
 
-    // 只有在上帝端运行时，才去执行写回 GitHub
+    // Super 写入核心：拿到精准的最新 sha 版本锁再稳固追加
     async function writeLogToGitHub(newLog) {
         try {
             const response = await fetch(`${GH_API_URL}?timestamp=${new Date().getTime()}`, {
@@ -291,13 +295,14 @@
                     "Content-Type": "application/json"
                 },
                 body: JSON.stringify({
-                    message: `💼 自动记账流水: ${newLog.agent} 出单`,
+                    message: `💼 自动追加对账单: ${newLog.agent}`,
                     content: updatedContent,
                     sha: fileSha 
                 })
             });
+            console.log("🔥 账单已成功刻进 GitHub 仓库文件中！");
         } catch (e) {
-            console.error("GitHub 账本追加失败:", e);
+            console.error("GitHub 存证同步故障:", e);
         }
     }
 
@@ -345,7 +350,7 @@
         const signature = generateSignature(rawString);
         const finalCode = `${expireTimeStr}-${signature}`;
 
-        // 🚀 核心纠错：代理商出单只发广播，绝不碰任何写文件的逻辑！
+        // 🚀 彻底剥离写文件：代理商只发广播，绝不准触碰任何多余代码
         if (!isBoss && mqttConnected) {
             const billData = {
                 agent: currentUser,
