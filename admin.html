@@ -6,7 +6,7 @@
     <title>墨析 AI - 发卡查账一体终端 (安全商业版)</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js" type="text/javascript"></script>
     <style>
-        body { font-family: -apple-system, sans-serif; background-color: #f4f4f5; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        body { font-family: -apple-system, sans-serif; background-color: #f4f4f5; display: flex; flex-direction: column; justify-content: center; align-items: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; }
         .container { background-color: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); width: 100%; max-width: 400px; box-sizing: border-box; }
         h2 { text-align: center; color: #18181b; margin-top: 0; }
         label { display: block; margin-top: 15px; margin-bottom: 5px; color: #52525b; font-size: 14px; font-weight: bold; }
@@ -30,6 +30,17 @@
         .status-bar { font-size: 12px; text-align: center; margin-top: 10px; padding: 6px; border-radius: 4px; font-weight: bold; }
         .status-connected { background-color: #dcfce7; color: #15803d; }
         .status-disconnected { background-color: #fee2e2; color: #b91c1c; }
+
+        /* 📊 老板专属财务大屏样式 */
+        .admin-dashboard { width: 100%; max-width: 800px; margin-top: 30px; background: #1e1e24; border: 1px solid #ffb703; border-radius: 8px; padding: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); display: none; box-sizing: border-box; }
+        .dashboard-title { color: #ffb703; font-size: 14pt; margin-bottom: 15px; border-left: 4px solid #ffb703; padding-left: 10px; font-weight: bold; }
+        .revenue-box { background: #2a2a35; padding: 12px; border-radius: 6px; margin-bottom: 15px; color: #fff; font-size: 11pt; }
+        .revenue-box span { color: #00f5d4; font-weight: bold; }
+        .log-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 10pt; }
+        .log-table th { background: #2a2a35; color: #ffb703; padding: 10px; text-align: left; border-bottom: 2px solid #ffb703; }
+        .log-table td { padding: 10px; color: #e0e0e0; border-bottom: 1px solid #3a3a45; }
+        .export-btn { background: #00f5d4; color: #000; border: none; padding: 8px 15px; border-radius: 4px; cursor: pointer; font-weight: bold; margin-top: 15px; font-size: 10pt; transition: 0.2s; }
+        .export-btn:hover { background: #00bbf9; color: #fff; }
     </style>
 </head>
 <body>
@@ -74,18 +85,45 @@
     </div>
 </div>
 
+<div id="adminDashboard" class="admin-dashboard">
+    <div class="dashboard-title">📊 墨析分销实时财务大屏 (云端数据同步中)</div>
+    <div class="revenue-box">
+        📈 财务实时统计：累计收到有效对账账单 <span id="totalOrders">0</span> 笔
+    </div>
+    <div style="overflow-x: auto;">
+        <table class="log-table">
+            <thead>
+                <tr>
+                    <th>代理商名称</th>
+                    <th>授权套餐</th>
+                    <th>客户机器码</th>
+                    <th>专属激活码</th>
+                    <th>发卡时间</th>
+                </tr>
+            </thead>
+            <tbody id="logTableBody">
+                <tr>
+                    <td colspan="5" style="text-align:center;color:#888;">暂无账单数据，正在拦截云端缓存...</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+    <button class="export-btn" onclick="exportToExcel()">📥 一键导出纯净版对账单 (CSV)</button>
+</div>
+
 <script>
     // --- 商业分销配置 ---
     const BOSS_PWD = "chen1998"; // 创始人绝对特权密码
     const AGENTS = {
         "adminzdl": "曾德龙",
-        "admin": "xx"
+        "admintest": "测试1"
     };
 
     let currentUser = ""; // 当前登录用户身份
     let isBoss = false;   // 是否为创始人
     let mqttClient = null;
     let mqttConnected = false;
+    let cleanSalesLogs = []; // 用于存储过滤后的纯净账单
 
     // --- 1. 密码与身份识别 ---
     function checkPwd() {
@@ -110,13 +148,16 @@
         document.getElementById('mainApp').style.display = 'block';
         document.getElementById('appTitle').innerText = isBoss ? "👑 墨析控制台 (上帝版)" : `💼 发卡端 (${currentUser})`;
         
+        if (isBoss) {
+            document.getElementById('adminDashboard').style.display = "block"; // 老板登录，显现财务大屏
+        }
+        
         // 登录成功后，立刻建立云端数据天线
         initMQTT();
     }
 
     // --- 2. 建立 MQTT 强制在线锁 (基于 8084 WSS 加密通道) ---
     function initMQTT() {
-        // 使用随机 ClientID 防止相互顶号
         const clientId = "keygen_" + Math.random().toString(16).substr(2, 8);
         mqttClient = new Paho.MQTT.Client("u11aa3e0.ala.cn-hangzhou.emqxsl.cn", 8084, "/mqtt", clientId);
 
@@ -129,6 +170,11 @@
                 const statusBar = document.getElementById('mqttStatus');
                 statusBar.innerText = "🟢 云端安全分销链已锁定 (已联网)";
                 statusBar.className = "status-bar status-connected";
+                
+                // 如果是老板登录，联网成功后自动订阅账单主题来拉取历史缓存
+                if (isBoss) {
+                    mqttClient.subscribe("moxi/sales_log");
+                }
             },
             onFailure: (err) => {
                 mqttConnected = false;
@@ -144,6 +190,38 @@
             const statusBar = document.getElementById('mqttStatus');
             statusBar.innerText = "🔴 连不上云端鉴权中心，请检查网线！";
             statusBar.className = "status-bar status-disconnected";
+        };
+
+        // 监听云端账单消息并高精度过滤垃圾日志
+        mqttClient.onMessageArrived = (message) => {
+            if (message.destinationName !== "moxi/sales_log" || !message.payloadString.trim()) return;
+            
+            try {
+                const logData = JSON.parse(message.payloadString);
+                // 双重格式过滤，防止混入杂质
+                if (!logData.agent || !logData.code) return;
+                
+                // 去重机制：防止因网络重复投递显示相同单号
+                if (cleanSalesLogs.some(item => item.code === logData.code)) return;
+                
+                cleanSalesLogs.push(logData);
+                
+                const tbody = document.getElementById('logTableBody');
+                if (cleanSalesLogs.length === 1) tbody.innerHTML = ""; // 清空“暂无数据”
+                
+                const row = `<tr>
+                    <td style="color:#00f5d4; font-weight:bold;">${logData.agent}</td>
+                    <td>${logData.type}</td>
+                    <td style="font-family:monospace;">${logData.hwid}</td>
+                    <td style="color:#ffb703;font-family:monospace;">${logData.code}</td>
+                    <td style="color:#888;">${logData.time}</td>
+                </tr>`;
+                tbody.innerHTML += row;
+                
+                document.getElementById('totalOrders').innerText = cleanSalesLogs.length;
+            } catch (e) {
+                // 默默吞掉非JSON的系统杂质消息
+            }
         };
 
         mqttClient.connect(options);
@@ -162,7 +240,6 @@
             return;
         }
 
-        // --- 开始计算激活码 (保持你原封不动的核心哈希算法) ---
         let date = new Date();
         let cardType = "";
 
@@ -233,6 +310,28 @@
             hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
         }
         return (hash >>> 0).toString(16).padStart(8, '0').toUpperCase();
+    }
+
+    // --- 📥 一键导出纯净版 Excel 表格 (CSV格式) ---
+    function exportToExcel() {
+        if (cleanSalesLogs.length === 0) {
+            alert("当前大屏空空如也，无账单可导！");
+            return;
+        }
+        let csvContent = "\uFEFF代理商名称,授权套餐,客户机器码,专属激活码,发卡时间\n";
+        cleanSalesLogs.forEach(log => {
+            csvContent += `"${log.agent}","${log.type}","${log.hwid}","${log.code}","${log.time}"\n`;
+        });
+        
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const link = document.createElement("a");
+        const url = URL.createObjectURL(blob);
+        link.setAttribute("href", url);
+        link.setAttribute("download", `墨析分销纯净对账单_${new Date().toLocaleDateString().replace(/\//g, '-')}.csv`);
+        link.style.visibility = 'hidden';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
     }
 
     // --- 辅助功能：一键粘贴与复制 ---
