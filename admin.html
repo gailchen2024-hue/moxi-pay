@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>墨析 AI - 发卡查账一体终端 (云端数据版)</title>
+    <title>墨析 AI - 发卡查账一体终端 (安全商业版)</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js" type="text/javascript"></script>
     <style>
         body { font-family: -apple-system, sans-serif; background-color: #f4f4f5; display: flex; flex-direction: column; justify-content: center; align-items: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; }
@@ -52,7 +52,7 @@
 </div>
 
 <div class="container" id="mainApp" style="display: none;">
-    <h2>🚀 墨析发卡终端</h2>
+    <h2 id="appTitle">🚀 墨析发卡终端</h2>
     <div id="mqttStatus" class="status-bar status-disconnected">🌐 正在安全连接云端中...</div>
     
     <label>老师发来的【机器码】</label>
@@ -133,7 +133,7 @@
     let isBoss = false;   
     let mqttClient = null;
     let mqttConnected = false;
-    let cleanSalesLogs = []; // 核心账本内存数组
+    let cleanSalesLogs = []; 
 
     function checkPwd() {
         const pwd = document.getElementById('accessPwd').value.trim();
@@ -154,16 +154,15 @@
     function enterSystem() {
         document.getElementById('loginScreen').style.display = 'none';
         document.getElementById('mainApp').style.display = 'block';
+        document.getElementById('appTitle').innerText = isBoss ? "👑 墨析控制台 (上帝版)" : `💼 发卡端 (${currentUser})`;
         
         if (isBoss) {
             document.getElementById('adminDashboard').style.display = "block"; 
-            // 💥 异步尝试加载 GitHub 历史，成败绝不影响全局
             loadAllHistoryFromGitHub(); 
         }
         initMQTT();
     }
 
-    // 从 GitHub 默默读取历史，只做去重并合并，绝不覆盖已有画面
     async function loadAllHistoryFromGitHub() {
         try {
             const response = await fetch(`${GH_API_URL}?timestamp=${new Date().getTime()}`, {
@@ -176,20 +175,18 @@
                 
                 if (Array.isArray(githubLogs)) {
                     githubLogs.forEach(log => {
-                        // 🔒 铁律去重：如果本地 MQTT 已经抓到了，就不重复添加
                         if (!cleanSalesLogs.some(item => item.code === log.code)) {
                             cleanSalesLogs.push(log);
                         }
                     });
-                    renderTable(); // 重新渲染合并后的画面
+                    renderTable(); 
                 }
             }
         } catch (e) {
-            console.log("GitHub 历史账本读取受限，转为纯实时安全对账模式");
+            console.log("GitHub 历史账本读取受限");
         }
     }
 
-    // 严丝合缝的刷新渲染函数
     function renderTable() {
         const tbody = document.getElementById('logTableBody');
         if (cleanSalesLogs.length === 0) {
@@ -197,7 +194,6 @@
             document.getElementById('totalOrders').innerText = "0";
             return;
         }
-        // 按时间倒序，最新的单子在最上面
         let sortedLogs = [...cleanSalesLogs].sort((a, b) => new Date(b.time) - new Date(a.time));
         
         let htmlRows = "";
@@ -243,26 +239,66 @@
         mqttClient.onConnectionLost = (responseObject) => {
             mqttConnected = false;
             const statusBar = document.getElementById('mqttStatus');
-            statusBar.innerText = "🔴 连不上云端鉴中心，请检查网线！";
+            statusBar.innerText = "🔴 连不上云端鉴权中心，请检查网线！";
             statusBar.className = "status-bar status-disconnected";
         };
 
-        // 💥 黄金实时听筒：收到单子直接往内存加，死死保住实时账单！
         mqttClient.onMessageArrived = (message) => {
             if (message.destinationName !== "moxi/sales_log" || !message.payloadString.trim()) return;
             try {
                 const logData = JSON.parse(message.payloadString);
                 if (!logData.agent || !logData.code) return;
                 
-                // 去重，防止同一单重复出现
                 if (cleanSalesLogs.some(item => item.code === logData.code)) return;
                 
                 cleanSalesLogs.push(logData);
-                renderTable(); // 钉在屏幕上
+                renderTable(); 
+                
+                // 👑 【核心商业修正】：只有当老板大屏在线捕获时，才用老板的身份写进 GitHub！
+                if (isBoss) {
+                    writeLogToGitHub(logData);
+                }
             } catch (e) {}
         };
 
         mqttClient.connect(options);
+    }
+
+    // 只有在上帝端运行时，才去执行写回 GitHub
+    async function writeLogToGitHub(newLog) {
+        try {
+            const response = await fetch(`${GH_API_URL}?timestamp=${new Date().getTime()}`, {
+                headers: { "Authorization": `token ${getCleanToken()}` }
+            });
+            let currentLogs = [];
+            let fileSha = "";
+            
+            if (response.ok) {
+                const fileData = await response.json();
+                fileSha = fileData.sha; 
+                const rawContent = decodeURIComponent(escape(atob(fileData.content)));
+                currentLogs = JSON.parse(rawContent);
+            }
+            
+            if (currentLogs.some(item => item.code === newLog.code)) return;
+            currentLogs.push(newLog);
+            
+            const updatedContent = btoa(unescape(encodeURIComponent(JSON.stringify(currentLogs, null, 2))));
+            await fetch(GH_API_URL, {
+                method: "PUT",
+                headers: {
+                    "Authorization": `token ${getCleanToken()}`,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    message: `💼 自动记账流水: ${newLog.agent} 出单`,
+                    content: updatedContent,
+                    sha: fileSha 
+                })
+            });
+        } catch (e) {
+            console.error("GitHub 账本追加失败:", e);
+        }
     }
 
     function generateCode() {
@@ -309,6 +345,7 @@
         const signature = generateSignature(rawString);
         const finalCode = `${expireTimeStr}-${signature}`;
 
+        // 🚀 核心纠错：代理商出单只发广播，绝不碰任何写文件的逻辑！
         if (!isBoss && mqttConnected) {
             const billData = {
                 agent: currentUser,
@@ -322,8 +359,6 @@
             message.destinationName = "moxi/sales_log";
             message.retained = true;
             mqttClient.send(message);
-            
-            writeLogToGitHub(billData);
         }
 
         document.getElementById('activationCode').innerText = finalCode;
