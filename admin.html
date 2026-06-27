@@ -86,9 +86,9 @@
 </div>
 
 <div id="adminDashboard" class="admin-dashboard">
-    <div class="dashboard-title">📊 墨析分销实时财务大屏 (云端永久账本已同步)</div>
+    <div class="dashboard-title">📊 墨析分销实时财务大屏 (本地同源数据)</div>
     <div class="revenue-box">
-        📈 财务实时统计：累计收到有效对账账单 <span id="totalOrders">0</span> 笔
+        📈 财务实时统计：当前捕获有效账单 <span id="totalOrders">0</span> 笔
     </div>
     <div style="overflow-x: auto;">
         <table class="log-table">
@@ -103,7 +103,7 @@
             </thead>
             <tbody id="logTableBody">
                 <tr>
-                    <td colspan="5" style="text-align:center;color:#888;">正在从云端账本加载历史账单，请稍候...</td>
+                    <td colspan="5" style="text-align:center;color:#888;">正在接收云端实时广播账单...</td>
                 </tr>
             </tbody>
         </table>
@@ -119,14 +119,11 @@
         "admintest1": "测试1"
     };
 
-    // 🛠️ 分配的老板专属免费匿名云账本ID（全球唯一，数据永久累加，不会被顶掉）
-    const CLOUD_DB_URL = "https://kvdb.io/2U9tWbEwSihU7t4j8oF9R4/moxi_sales_v1";
-
-    let currentUser = ""; // 当前登录用户身份
-    let isBoss = false;   // 是否为创始人
+    let currentUser = ""; 
+    let isBoss = false;   
     let mqttClient = null;
     let mqttConnected = false;
-    let cleanSalesLogs = []; // 用于存储过滤后的纯净账单
+    let cleanSalesLogs = []; 
 
     // --- 1. 密码与身份识别 ---
     function checkPwd() {
@@ -152,44 +149,23 @@
         document.getElementById('appTitle').innerText = isBoss ? "👑 墨析控制台 (上帝版)" : `💼 发卡端 (${currentUser})`;
         
         if (isBoss) {
-            document.getElementById('adminDashboard').style.display = "block"; // 老板登录，显现财务大屏
-            loadAllHistoryLogs(); // 💥 一进系统，立刻从云端大账本拉取所有历史记录！
+            document.getElementById('adminDashboard').style.display = "block"; 
+            renderTable();
         }
         
-        // 登录成功后，立刻建立云端数据天线
         initMQTT();
-    }
-
-    // 从云端备份账本读取所有历史数据，刷新绝对不丢
-    async function loadAllHistoryLogs() {
-        try {
-            const response = await fetch(CLOUD_DB_URL);
-            if (response.ok) {
-                const data = await response.json();
-                if (Array.isArray(data)) {
-                    cleanSalesLogs = data;
-                    renderTable();
-                }
-            } else {
-                document.getElementById('logTableBody').innerHTML = `<tr><td colspan="5" style="text-align:center;color:#888;">暂无历史账单（新开张）</td></tr>`;
-            }
-        } catch (e) {
-            document.getElementById('logTableBody').innerHTML = `<tr><td colspan="5" style="text-align:center;color:#ff4d4d;">云端账本读取失败，请检查网络！</td></tr>`;
-        }
     }
 
     // 重新渲染表格视图
     function renderTable() {
         const tbody = document.getElementById('logTableBody');
         if (cleanSalesLogs.length === 0) {
-            tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#888;">暂无账单数据</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#888;">云端天线已就绪，静候出单广播...</td></tr>`;
             document.getElementById('totalOrders').innerText = "0";
             return;
         }
         
-        // 倒序排列，让最新的账单排在最上面
         let sortedLogs = [...cleanSalesLogs].reverse();
-        
         tbody.innerHTML = "";
         sortedLogs.forEach(logData => {
             const row = `<tr>
@@ -204,35 +180,7 @@
         document.getElementById('totalOrders').innerText = cleanSalesLogs.length;
     }
 
-    // 将单笔账单追加保存到云端大账本中
-    async function saveLogToCloudDB(newLog) {
-        try {
-            // 1. 先读取最新的账本列表
-            let currentLogs = [];
-            const response = await fetch(CLOUD_DB_URL);
-            if (response.ok) {
-                currentLogs = await response.json();
-                if (!Array.isArray(currentLogs)) currentLogs = [];
-            }
-            
-            // 2. 避免网络重复投递导致的单号重复
-            if (currentLogs.some(item => item.code === newLog.code)) return;
-            
-            // 3. 把新账单追加在末尾
-            currentLogs.push(newLog);
-            
-            // 4. 强行写回云端永久记账本
-            await fetch(CLOUD_DB_URL, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(currentLogs)
-            });
-        } catch (e) {
-            console.error("云端账本追加同步失败: ", e);
-        }
-    }
-
-    // --- 2. 建立 MQTT 强制在线锁 (基于 8084 WSS 加密通道) ---
+    // --- 2. 建立 MQTT 强制在线锁 ---
     function initMQTT() {
         const clientId = "keygen_" + Math.random().toString(16).substr(2, 8);
         mqttClient = new Paho.MQTT.Client("u11aa3e0.ala.cn-hangzhou.emqxsl.cn", 8084, "/mqtt", clientId);
@@ -240,12 +188,17 @@
         const options = {
             useSSL: true,
             userName: "moxi",
-            password: "chen1998", // ⚠️ 替换为你之前在客户端认证创建的真实密码！
+            password: "chen1998", // ⚠️ 改为你自己的真实密码
             onSuccess: () => {
                 mqttConnected = true;
                 const statusBar = document.getElementById('mqttStatus');
                 statusBar.innerText = "🟢 云端安全分销链已锁定 (已联网)";
                 statusBar.className = "status-bar status-connected";
+                
+                // 老板进去强行挂载听筒，实时吃下单子
+                if (isBoss) {
+                    mqttClient.subscribe("moxi/sales_log");
+                }
             },
             onFailure: (err) => {
                 mqttConnected = false;
@@ -263,7 +216,6 @@
             statusBar.className = "status-bar status-disconnected";
         };
 
-        // 接收实时推送的账单并动态追加更新
         mqttClient.onMessageArrived = (message) => {
             if (message.destinationName !== "moxi/sales_log" || !message.payloadString.trim()) return;
             try {
@@ -273,7 +225,7 @@
                 if (cleanSalesLogs.some(item => item.code === logData.code)) return;
                 
                 cleanSalesLogs.push(logData);
-                renderTable(); // 实时刷入屏幕
+                renderTable(); 
             } catch (e) {}
         };
 
@@ -287,7 +239,6 @@
         
         if (!hwid) return alert("没填机器码！");
 
-        // 🚨 铁律拦截：如果不是老板，且网络没连上，直接锁死不给算码！
         if (!isBoss && !mqttConnected) {
             alert("🚨 警告：检测到网络通信中断！\n系统已强制锁定，禁止离线生成激活码！请联网后再试。");
             return;
@@ -328,7 +279,6 @@
         
         const finalCode = `${expireTimeStr}-${signature}`;
 
-        // --- 核心商业追踪：如果是代理商出单，强行双重上报给MQTT+云端大账本 ---
         if (!isBoss && mqttConnected) {
             const billData = {
                 agent: currentUser,
@@ -338,14 +288,10 @@
                 time: new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
             };
             
-            // 1. 发送给实时通讯数据线
             const message = new Paho.MQTT.Message(JSON.stringify(billData));
             message.destinationName = "moxi/sales_log";
             message.retained = true;
             mqttClient.send(message);
-            
-            // 2. 直接追加写入云端大账本（保命防覆盖）
-            saveLogToCloudDB(billData);
         }
 
         document.getElementById('activationCode').innerText = finalCode;
@@ -356,7 +302,6 @@
         copyBtn.style.backgroundColor = "#10b981";
     }
 
-    // --- FNV-1a 盐值算码哈希算法 ---
     const SECRET_SALT = "MoXi_Physics_AI_2026_@TopSecret!";
 
     function generateSignature(str) {
@@ -368,7 +313,6 @@
         return (hash >>> 0).toString(16).padStart(8, '0').toUpperCase();
     }
 
-    // --- 📥 一键导出纯净版 Excel 表格 (CSV格式) ---
     function exportToExcel() {
         if (cleanSalesLogs.length === 0) {
             alert("当前大屏空空如也，无账单可导！");
@@ -390,13 +334,12 @@
         document.body.removeChild(link);
     }
 
-    // --- 辅助功能：一键粘贴与复制 ---
     async function pasteHWID() {
         try {
             const text = await navigator.clipboard.readText();
             document.getElementById('hwid').value = text.trim();
         } catch (err) {
-            alert("⚠️ 浏览器安全限制，请直接使用 Ctrl+V 粘贴！");
+            alert("⚠️ 请直接使用 Ctrl+V 粘贴！");
             document.getElementById('hwid').focus();
         }
     }
@@ -418,7 +361,7 @@
                 copyBtn.style.backgroundColor = "#10b981";
             }, 2000);
         } catch (err) {
-            alert("❌ 复制失败，请手动长按数字复制！");
+            alert("❌ 复制失败！");
         }
         document.body.removeChild(textArea);
     }
