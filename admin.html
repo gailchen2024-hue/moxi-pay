@@ -31,15 +31,23 @@
         .status-disconnected { background-color: #fee2e2; color: #b91c1c; }
 
         /* 📊 老板专属财务大屏样式 */
-        .admin-dashboard { width: 100%; max-width: 800px; margin-top: 30px; background: #1e1e24; border: 1px solid #ffb703; border-radius: 8px; padding: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); display: none; box-sizing: border-box; }
+        .admin-dashboard { width: 100%; max-width: 900px; margin-top: 30px; background: #1e1e24; border: 1px solid #ffb703; border-radius: 8px; padding: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); display: none; box-sizing: border-box; }
         .dashboard-title { color: #ffb703; font-size: 14pt; margin-bottom: 15px; border-left: 4px solid #ffb703; padding-left: 10px; font-weight: bold; }
-        .revenue-box { background: #2a2a35; padding: 12px; border-radius: 6px; margin-bottom: 15px; color: #fff; font-size: 11pt; }
+        .revenue-box { background: #2a2a35; padding: 12px; border-radius: 6px; margin-bottom: 15px; color: #fff; font-size: 11pt; display: flex; justify-content: space-between; align-items: center; }
         .revenue-box span { color: #00f5d4; font-weight: bold; }
         .log-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 10pt; }
         .log-table th { background: #2a2a35; color: #ffb703; padding: 10px; text-align: left; border-bottom: 2px solid #ffb703; }
-        .log-table td { padding: 10px; color: #e0e0e0; border-bottom: 1px solid #3a3a45 1px solid; }
+        .log-table td { padding: 10px; color: #e0e0e0; border-bottom: 1px solid #3a3a45; }
         .export-btn { background: #00f5d4; color: #000; border: none; padding: 8px 15px; border-radius: 4px; cursor: pointer; font-weight: bold; margin-top: 15px; font-size: 10pt; transition: 0.2s; }
         .export-btn:hover { background: #00bbf9; color: #fff; }
+        
+        /* 🗑️ 删除与操作样式 */
+        .btn-delete { background-color: #ef4444; color: white; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 9pt; font-weight: bold; transition: 0.2s; }
+        .btn-delete:hover { background-color: #dc2626; }
+        .btn-batch-delete { background-color: #dc2626; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 10pt; font-weight: bold; transition: 0.2s; display: none; }
+        .btn-batch-delete:hover { background-color: #b91c1c; }
+        .chkbx-col { width: 30px; text-align: center; }
+        input[type="checkbox"] { width: auto; padding: 0; cursor: pointer; }
     </style>
 </head>
 <body>
@@ -87,22 +95,25 @@
 <div id="adminDashboard" class="admin-dashboard">
     <div class="dashboard-title">📊 墨析分销实时财务大屏 (GitHub 云账本永久同步)</div>
     <div class="revenue-box">
-        📈 财务实时统计：当前云账本安全存证 <span id="totalOrders">0</span> 笔
+        <div>📈 财务实时统计：当前云账本安全存证 <span id="totalOrders">0</span> 笔</div>
+        <button id="batchDeleteBtn" class="btn-batch-delete" onclick="deleteSelectedLogsFromGitHub()">🗑️ 批量删除已选记录 (0)</button>
     </div>
     <div style="overflow-x: auto;">
         <table class="log-table">
             <thead>
                 <tr>
+                    <th id="thSelect" class="chkbx-col" style="display:none;"><input type="checkbox" id="selectAll" onclick="toggleSelectAll(this)"></th>
                     <th>代理商名称</th>
                     <th>授权套餐</th>
                     <th>客户机器码</th>
                     <th>专属激活码</th>
                     <th>发卡时间</th>
+                    <th id="thAction" style="display:none;">管理操作</th>
                 </tr>
             </thead>
             <tbody id="logTableBody">
                 <tr>
-                    <td colspan="5" style="text-align:center;color:#888;">正在同步 GitHub 云端账本流水...</td>
+                    <td colspan="7" style="text-align:center;color:#888;">正在同步 GitHub 云端账本流水...</td>
                 </tr>
             </tbody>
         </table>
@@ -158,6 +169,9 @@
         
         if (isBoss) {
             document.getElementById('adminDashboard').style.display = "block"; 
+            document.getElementById('thSelect').style.display = ""; // 上帝版显示复选框列头
+            document.getElementById('thAction').style.display = ""; // 上帝版显示操作列表头
+            document.getElementById('batchDeleteBtn').style.display = "block"; // 上帝版显示批量删除按钮
             loadAllHistoryFromGitHub(); 
         }
         initMQTT();
@@ -174,7 +188,7 @@
                 const rawContent = decodeURIComponent(escape(atob(fileData.content)));
                 const remoteLogs = JSON.parse(rawContent);
                 if (Array.isArray(remoteLogs)) {
-                    // 合并去重
+                    cleanSalesLogs = [];
                     remoteLogs.forEach(log => {
                         if (!cleanSalesLogs.some(item => item.code === log.code)) {
                             cleanSalesLogs.push(log);
@@ -191,8 +205,9 @@
     function renderTable() {
         const tbody = document.getElementById('logTableBody');
         if (cleanSalesLogs.length === 0) {
-            tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#888;">天网已就绪，静候出单...</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:#888;">天网已就绪，静候出单...</td></tr>`;
             document.getElementById('totalOrders').innerText = "0";
+            updateBatchBtnCount();
             return;
         }
         // 按时间倒序排列，最新出的单子在最上面
@@ -201,15 +216,100 @@
         let htmlRows = "";
         sortedLogs.forEach(logData => {
             htmlRows += `<tr>
+                ${isBoss ? `<td class="chkbx-col"><input type="checkbox" class="row-select" value="${logData.code}" onclick="updateBatchBtnCount()"></td>` : ''}
                 <td style="color:#00f5d4; font-weight:bold;">${logData.agent}</td>
                 <td>${logData.type}</td>
                 <td style="font-family:monospace;">${logData.hwid}</td>
                 <td style="color:#ffb703;font-family:monospace;">${logData.code}</td>
                 <td style="color:#888;">${logData.time}</td>
+                ${isBoss ? `<td><button class="btn-delete" onclick="deleteSingleLogFromGitHub('${logData.code}')">🗑️ 删除</button></td>` : ''}
             </tr>`;
         });
         tbody.innerHTML = htmlRows;
         document.getElementById('totalOrders').innerText = cleanSalesLogs.length;
+        
+        // 每次渲染重置全选框勾选状态并更新计数
+        document.getElementById('selectAll').checked = false;
+        updateBatchBtnCount();
+    }
+
+    // 全选/全不选切换逻辑
+    function toggleSelectAll(master) {
+        const checkboxes = document.querySelectorAll('.row-select');
+        checkboxes.forEach(cb => cb.checked = master.checked);
+        updateBatchBtnCount();
+    }
+
+    // 动态更新批量删除按钮上的选中计数值
+    function updateBatchBtnCount() {
+        if (!isBoss) return;
+        const checkedCount = document.querySelectorAll('.row-select:checked').length;
+        document.getElementById('batchDeleteBtn').innerText = `🗑️ 批量删除已选记录 (${checkedCount})`;
+    }
+
+    // 🗑️ 【上帝专属：单条记录删除】
+    async function deleteSingleLogFromGitHub(targetCode) {
+        if (!isBoss) return;
+        if (!confirm("🚨 警告：此操作将永久从 GitHub 云账本中抹去这笔发卡存证！\n确定要删除吗？")) return;
+        await executeCloudDelete([targetCode]);
+    }
+
+    // 🗑️ 【上帝专属：多选批量删除逻辑】（内存打包，唯一一次网络请求，杜绝并发409冲突）
+    async function deleteSelectedLogsFromGitHub() {
+        if (!isBoss) return;
+        const selectedCheckboxes = document.querySelectorAll('.row-select:checked');
+        if (selectedCheckboxes.length === 0) return alert("您还未勾选任何需要删除的测试记录！");
+
+        if (!confirm(`🚨 警告：您当前勾选了 ${selectedCheckboxes.length} 笔记录！\n此操作将一次性永久从云端抹除，无法恢复！\n确定要全部删除吗？`)) return;
+
+        const targetCodes = Array.from(selectedCheckboxes).map(cb => cb.value);
+        await executeCloudDelete(targetCodes);
+    }
+
+    // 核心云端异步原子删除写入器
+    async function executeCloudDelete(targetCodesArray) {
+        try {
+            // 1. 获取最新独占 SHA 版本锁
+            const response = await fetch(`${GH_API_URL}?timestamp=${new Date().getTime()}`, {
+                headers: { "Authorization": `token ${getCleanToken()}` }
+            });
+            if (!response.ok) return alert("获取云端最新账本状态失败！");
+            
+            const fileData = await response.json();
+            const fileSha = fileData.sha;
+            const rawContent = decodeURIComponent(escape(atob(fileData.content)));
+            let currentLogs = JSON.parse(rawContent);
+            
+            // 2. 一次性打包过滤
+            currentLogs = currentLogs.filter(item => !targetCodesArray.includes(item.code));
+            
+            // 3. 统一加密覆盖写入
+            const updatedContent = btoa(unescape(encodeURIComponent(JSON.stringify(currentLogs, null, 2))));
+            const putResponse = await fetch(GH_API_URL, {
+                method: "PUT",
+                headers: {
+                    "Authorization": `token ${getCleanToken()}`,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    message: `🗑️ 上帝后台同步清理 ${targetCodesArray.length} 笔记录`,
+                    content: updatedContent,
+                    sha: fileSha
+                })
+            });
+
+            if (putResponse.ok) {
+                alert(`🔥 成功从云端永久抹除 ${targetCodesArray.length} 笔测试记录！`);
+                // 4. 同步更新大屏本地内存，无缝重新渲染
+                cleanSalesLogs = cleanSalesLogs.filter(item => !targetCodesArray.includes(item.code));
+                renderTable();
+            } else {
+                alert("云端同步失败，可能存在锁冲突，请刷新网页重试！");
+            }
+        } catch (e) {
+            console.error("批量操作云存证故障:", e);
+            alert("执行操作过程中发生未知网络错误！");
+        }
     }
 
     function initMQTT() {
@@ -256,7 +356,7 @@
                 if (cleanSalesLogs.some(item => item.code === logData.code)) return;
                 
                 cleanSalesLogs.push(logData);
-                renderTable(); // 立刻渲染出来，不闪现不消失
+                renderTable(); 
                 
                 // 👑 只有是创始人登录状态，才触发真正写回 GitHub 的最高权限函数！
                 if (isBoss) {
@@ -350,16 +450,23 @@
         const signature = generateSignature(rawString);
         const finalCode = `${expireTimeStr}-${signature}`;
 
-        // 🚀 彻底剥离写文件：代理商只发广播，绝不准触碰任何多余代码
-        if (!isBoss && mqttConnected) {
-            const billData = {
-                agent: currentUser,
-                type: cardType,
-                hwid: hwid,
-                code: finalCode,
-                time: new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
-            };
-            
+        // 📝 组装发卡账单结构体
+        const billData = {
+            agent: currentUser,
+            type: cardType,
+            hwid: hwid,
+            code: finalCode,
+            time: new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
+        };
+
+        // 🚀 【上帝发卡自动记账修补与权限隔离】：
+        if (isBoss) {
+            if (!cleanSalesLogs.some(item => item.code === finalCode)) {
+                cleanSalesLogs.push(billData);
+                renderTable();
+            }
+            writeLogToGitHub(billData);
+        } else if (mqttConnected) {
             const message = new Paho.MQTT.Message(JSON.stringify(billData));
             message.destinationName = "moxi/sales_log";
             message.retained = true;
